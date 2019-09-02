@@ -1,0 +1,25 @@
+alrm eparam="8" eparam_len="1" eparam_type="5" event="0" ext="1" level="0" status="255" utime="1566267194" vtype="0" zensor_nodeid="0" ztype="7" />
+
+alrm eparam="" - original is idle state
+eparam_len="0" 
+eparam_type="0" 
+event="8"  - Motion detected
+ext="1" - event parameter length
+level="0" 
+status="255" - unsolicited event
+utime="1566267362" 
+vtype="0" 
+zensor_nodeid="0" 
+ztype="7" />
+
+alrm eparam="8" - original is 08 for event, so it means it had been cleared
+eparam_len="1" 
+eparam_type="5" - unknown ??
+event="0" - idle state
+ext="1" - event parameter length
+level="0" - for V1 so ignore
+status="255" - unsolicited event
+utime="1566268241" 
+vtype="0" - for V1 so ignore
+zensor_nodeid="0" 
+ztype="7" - Notification Type
