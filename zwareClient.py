@@ -5,6 +5,8 @@
 # author : aikhong
 # Modify from original Silab code to add in MQTT connection to AWS
 # Remove all network functions
+# add in support for Thermostat control - 1 Nov 2019
+# Formalize JSON format
 
 from tkinter import *
 from tkinter import messagebox
@@ -32,12 +34,14 @@ mqttc = AWSIoTMQTTClient("RPI_Zware")
 
 sensor_event=[[],[0]]
 binary_event=[[],[0]]
+multilevel_sensor_event=[[],0]
 
 Znodeid=[]
 #for updating the device status
 status = "none"
 nodeid = 0
 value = 0
+type = 0
 message = "none"
 
 def json_encode(string):
@@ -52,7 +56,7 @@ def send(topic):
 
 #aikhong - mqtt subscribe callback
 def customCallback(client, userdata, message):
-	global status, nodeid, value
+	global status, nodeid, value, type
 
 	print("Handle_mqtt_message")
 	print(message.payload)
@@ -62,25 +66,33 @@ def customCallback(client, userdata, message):
 	#m_decode=str(message.payload.decode())
 	m_in=json.loads(m_decode) #decode json data
 	#print(type(m_in))
+	#JSON format :
+	#{
+	#	"nodeid" : "?",
+	#	"command" : "<refer to command class",
+	#	"value" : "?"
+	#	"type" : "?"	// in some cases, may not be for all
+	#}
 	if(message.topic == "sgoffice/cmd"):
 		#nodeid = m_in["nodeid"]
-		nodeid = 6	# map all the node id 6 first
-		value = m_in["value"]
+		nodeid = m_in["nodeid"]
 		command = m_in["command"]
-		if(m_in["command"] == "switch" or m_in["command"] == "switch1"):
+		value = m_in["value"]
+
+		if(m_in["command"] == "switch" ):
 			status = "binary"
-			print("command is binary")
+			#print("Binary Switch Cmd")
+			#binary_switch_action(nodeid, value)	cannot call from here
 
-		print("Value = ",value)
-		print("Command =",command)
+		if(m_in["command"] =="thermostat setpoint setting"):
+			type = m_in["type"]
+			status ="thermostat setpoint"
+			#print("Thermostat setpoint Cmd")
 
-	#self.binary_switch_action(nodeid, command)
-	# payload format
-	#payload['type'] = "control"
-	#payload['command'] = "switch1"
-	#payload['value'] = 0
-	#payload['device'] = "wallplugb"
-	#payload_json_data = json.dumps(payload)
+		#debugging
+		#print("Value = ",value)
+		#print("Command =",command)
+		#print("Type", type)
 
 
 class zwareClientClass:
@@ -89,6 +101,7 @@ class zwareClientClass:
 	MULTILEVELSENSORINTERFACE = 49
 	#aikhong
 	NOTIFICATIONINTERFACE = 113
+	THERMOSTATSETPOINTINTERFACE = 67
 	#aikhong
 	MAXSMARTSTARTDEVICES = 32
 	runPollingThread = True
@@ -97,7 +110,7 @@ class zwareClientClass:
 	smartStartList = {}
 	smartStartData = {}
 	deviceDictionaryList = {}
-	deviceInterfaceList = [BINARYSWITCHINTERFACE,BINARYSENSORINTERFACE,MULTILEVELSENSORINTERFACE,NOTIFICATIONINTERFACE]
+	deviceInterfaceList = [BINARYSWITCHINTERFACE,BINARYSENSORINTERFACE,MULTILEVELSENSORINTERFACE,NOTIFICATIONINTERFACE, THERMOSTATSETPOINTINTERFACE]
 	#deviceInterfaceList = [BINARYSWITCHINTERFACE,BINARYSENSORINTERFACE,MULTILEVELSENSORINTERFACE]	#original
 	zware = None
 
@@ -161,12 +174,12 @@ class zwareClientClass:
 
 
 	def connected_to_server(self,Button,Frame,ipAddress,username="user",password="smarthome"):
-		if ipAddress == "": temp solution
-			self.debugData.delete('1.0', END)
-			self.debugData.insert(INSERT, "Please enter a valid IP address\n")
-			return
+		#if ipAddress == "": #temp solution
+		#	self.debugData.delete('1.0', END)
+		#	self.debugData.insert(INSERT, "Please enter a valid IP address\n")
+		#	return
 		#boardIp = 'https://' + ipAddress + '/'
-		#ipAddress ="192.168.87.132"	#aikhong - save time
+		ipAddress ="192.168.10.54"	#aikhong - save time
 
 		boardIp = 'https://' + ipAddress + '/'
 		r = self.zware.zw_init(boardIp,username,password)
@@ -202,15 +215,15 @@ class zwareClientClass:
 
 #aikhong
 	def do_action(self):
-		global status, nodeid, value
+		global status, nodeid, value, type
 
 		if(status == "binary"):
-			print("control node id " +str(nodeid) + " value " +str(value))
+			#print("control node id " +str(nodeid) + " value " +str(value))
 			self.binary_switch_action(nodeid, value)
-		elif(status == "thermometer"):
-			print("Do this later")
-
-		status = "none"
+			status = "none"
+		if(status == "thermostat setpoint"):
+			self.thermostat_setpoint(nodeid, value, type)
+			status = "none"
 
 	#need to get the descripito if value again if there are 2 devices having the same CC
 	#the reason is that it will be overwritten by the last device.
@@ -239,6 +252,21 @@ class zwareClientClass:
 							self.deviceDictionaryList[interface]['ifdDevice'] = ifd
 							self.deviceDictionaryList[interface]['tempFoundDevice'] = 1
 
+	def get_descifofNode(self, ZwaveNodeID):
+
+		#print("ZwaveNodeID:" +str(ZwaveNodeID))
+
+		r = self.zware.zw_api('zwnet_get_node_list')
+		nodes = r.findall('./zwnet/zwnode')
+		for node in range(len(nodes)):
+			nodeid = nodes[node].get('id')	#actual node ID in Z-Wave network
+			#self.debugData.insert(INSERT,'node[' + str(node) + '] '+ "Z-Wave NodeID:"+ nodeid + "\n")	#mapping of Z-Wave node ID to Z-Ware ID
+			if(ZwaveNodeID == int(nodeid)):
+				descifnode = node
+
+		#print("descif id:" +str(descifnode))
+		return descifnode
+
 
 	def get_node_list(self):
 		#self.debugData.insert (INSERT,"get_node_list \n")
@@ -246,6 +274,7 @@ class zwareClientClass:
 		global Znodeid
 		global sensor_event
 		global binary_event
+		global multilevel_sensor_event
 		global message
 		Znodeid = []
 
@@ -254,15 +283,8 @@ class zwareClientClass:
 		for node in range(len(nodes)):
 			nodeid = nodes[node].get('id')	#actual node ID in Z-Wave network
 			Znodeid.append(nodeid)
-			self.debugData.insert(INSERT,'node[' + str(node) + '] '+ "id:"+ nodeid + "\n")
-			#aikhong
-			topic = TOPIC_OF_PUBLISH + '/' +nodeid+ '/'
-			data = {"device" : "Motion Sensor"}
-			message = mqttc.json_encode(data)
-			send(topic)
-			#self.mqttpublish(topic, nodeid)
+			self.debugData.insert(INSERT,'node[' + str(node) + '] '+ "id:"+ nodeid + "\n")	#mapping of Z-Wave node ID to Z-Ware ID
 
-			#aikhong
 			r2 = self.zware.zw_api('zwnode_get_ep_list', 'noded=' + nodes[node].get('desc'))
 			eps = r2.findall('./zwnode/zwep')
 			for ep in range(len(eps)):
@@ -299,6 +321,13 @@ class zwareClientClass:
 							message = mqttc.json_encode(data)   # encode oject to JSON
 							topic = TOPIC_OF_PUBLISH + '/Type of Device/'
 							send(topic)
+						if commandclass == "COMMAND_CLASS_SENSOR_MULTILEVEL":
+							device = "Multilevel Sensor"
+							data = {"device": device, "Node ID":nodeid}
+							message = mqttc.json_encode(data)   # encode oject to JSON
+							topic = TOPIC_OF_PUBLISH + '/Type of Device/'
+							send(topic)
+
 							#self.mqttpublish(topic, device)
 						#aikhong
 						ifid = int(intfs[intf].get('id'))
@@ -310,7 +339,7 @@ class zwareClientClass:
 
 		#creating a matrix - the size of each matrix table will be as big as the node list
 		a = len(Znodeid)
-		print("\n Forming the table, with column = ", a)
+		print("\nForming the table, with column = ", a)
 		sensor_event = [[0] * a for i in range(a)]
 		for i in range(a) :
 			sensor_event[0][i] =0
@@ -318,6 +347,10 @@ class zwareClientClass:
 		binary_event = [[0] * a for j in range(a)]
 		for j in range(a) :
 			binary_event[0][j] =0
+
+		multilevel_sensor_event = [[0] * a for k in range(a)]
+		for k in range(a) :
+			multilevel_sensor_event[0][k] =0
 
 
 #aikhong
@@ -390,14 +423,13 @@ class zwareClientClass:
 				self.poll_binary_switch(node);
 			elif poll == "sensor_multilevel":
 				#self.debugData.insert(INSERT,"poll_multilevel_sensor")
-				self.poll_multilevel_sensor();
+				self.poll_multilevel_sensor(node);
 			#else:
 				#self.debugData.insert(INSERT,"No Polling\n")
 
 			node = node+1
 
 	def node_list_action(self):
-		self.debugData.insert(INSERT,'Getting node details...\n')
 		#self.poll_node_list(True)	#aikhong --
 		self.get_node_list()	#aikhong ++
 		self.debugData.insert(INSERT,'Finished getting node details\n')
@@ -472,6 +504,12 @@ class zwareClientClass:
 
 	# need to define whether to turn it ON or OFF
 	def binary_switch_action(self, node, value):
+		# JSON format
+		#{
+  		#	"nodeid":"7",
+  		#	"command" : "switch",
+  		#	"value": "255"
+		#}
 		global binary_event
 		global Znodeid
 		timer = 0
@@ -482,16 +520,8 @@ class zwareClientClass:
 		else:
 			node = int(node)	# need to find out node id
 			a = len(Znodeid)
-			while i<a:
-				if(int(binary_event[0][i]) == node):
-					#print("node = " +str(node) + " Binary internal value = " +str(binary_event[0][i]))
-					loc = Znodeid[i]
-					break
-				i += 1
 
-			#print("\nValue in binary switch action: " +str(value))
-			print("Znodeid: " +str(loc))
-			print("Znodeid location: " +str(i))
+			i = self.get_descifofNode(node)
 			self.get_descif(i)
 
 			if( int(value) == 255):
@@ -531,18 +561,43 @@ class zwareClientClass:
 					binary_event[i][0] = 255
 		self.debugData.see(END)
 
-	# code not needed, to be remove - aikhong
-	#def enable_disable_binary_switch(self):
-	#	if self.deviceDictionaryList[self.BINARYSWITCHINTERFACE]['foundDevice'] == 0:
-	#		self.binarySwitchButton.grid_remove()
-	#	else:
-	#		self.binarySwitchButton.grid()
-	##
-	#\addtogroup binary_sensor
-	#@{
-	#\section polling_sensor Polling Binary Sensor State
-	#On polling for node list the client will also track device and their state values. This is applicable to Binary Sensors in this version. Once a binary sensor is found in the network the client will retrieve the sensor's last known state from the server. Every time the binary sensor's state changes it will send out a report to the server which will be stored as the last known state in the server. Additionally along with the value the client will also display the sensor type.
-	#@}
+	def thermostat_setpoint(self, node, value, type):
+
+		#JSON format :
+		#{
+		#	"nodeid":"6", //node id of Z-Wave network"
+  		#	"command" : "thermostat setpoint setting",
+  		#	"value": "22",	//temperature in celsius
+  		#	"type" : "cooling"	// or "heating"
+		#}
+
+		i = 0
+
+		# do note that we are using MULTILEVELSENSORINTERFACE, because the Remotec had the multilevel_sensor too
+		# a better way to do it is to use THERMOSTATSETPOINTINTERFACE
+		if self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['foundDevice'] == 0:
+			self.debugData.insert(INSERT,"No thermostat device is found in network\n")
+		else:
+			node = int(node)	# need to find out node id
+			i = self.get_descifofNode(node)
+			#print("value of i" +str(i))
+			self.get_descif(i)
+
+			if type == "heating" :
+				setpoint = 1
+			else:
+				setpoint = 2
+
+			cmd = "&type="+str(setpoint)+"&value="+str(value)+"&precision=1&unit=0"
+			#print("\ncmd:" +cmd)
+			ifd = self.deviceDictionaryList[self.THERMOSTATSETPOINTINTERFACE]['ifdDevice']
+			self.zware.zwif_thermo_setpoint_api(ifd, 1)
+			#self.zware.zwif_thermo_setpoint_api(ifd, 4, "&type=1&value=23&precision=1&unit=0")
+			self.zware.zwif_thermo_setpoint_api(ifd, 4, cmd)
+
+		self.debugData.see(END)
+
+
 	def poll_binary_sensor(self):
 		if self.deviceDictionaryList[self.BINARYSENSORINTERFACE]['foundDevice'] == 1:
 			self.zware.zwif_bsensor_api(self.deviceDictionaryList[self.BINARYSENSORINTERFACE]['ifdDevice'], 1)
@@ -591,7 +646,9 @@ class zwareClientClass:
 			#aikhong
 			if r == None:
 				#print("Error in connecting to ZIPGW, try again in Web")
-				self.debugData.insert(INSERT,"Error in connecting to ZIPGW, try connecting again in Web")
+				#self.debugData.insert(INSERT,"Error in connecting to ZIPGW, try connecting again in Web Notification Sensor ")
+				#self.debugData.insert(INSERT,"\nNo notification send out")
+				r=0
 			else:
 				xml = ET.tostring(r, encoding='unicode')
 				notification_device_data = "Polling: Notification Information:" + xml + "\n"
@@ -642,24 +699,50 @@ class zwareClientClass:
 	#Every time the multilevel sensor's value changes it will send out a report to the server which will be stored as the last known value in the server.
 	#Additionally along with the value the client will also display the sensor type, precision and unit.
 	#@}
-	def poll_multilevel_sensor(self):
+	def poll_multilevel_sensor(self, node):
+
+		global message
+
 		if self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['foundDevice'] == 1:
 			self.zware.zwif_sensor_api(self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['ifdDevice'], 1)
 			r = self.zware.zwif_sensor_api(self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['ifdDevice'], 3)
-			v = r.get('value')
-			t = r.get('type')
-			p = int(r.get('precision'))
-			u = r.get('unit')
-			multilevel_poll_data = "Polling:Multilevel Sensor Type:" + t + "," + "Value:" + v + "," + "Precision:" + p + "," + "Unit:" + u + "\n"
-			if self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['previouslyFoundDevice'] == 0:
-				self.debugData.insert(INSERT,"Polling: Multilevel Sensor found in network\n")
-				self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['previouslyFoundDevice'] = 1
-				self.debugData.insert(INSERT,multilevel_poll_value)
-				self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['defaultState'] = v
-			if self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['defaultState'] != v:
-				self.debugData.insert(INSERT,"Polling: Multilevel Sensor Updated\n")
-				self.debugData.insert(INSERT,multilevel_poll_value)
-				self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['defaultState'] = v
+			if r == None:
+				#print("Error in connecting to ZIPGW, try again in Web")
+				self.debugData.insert(INSERT,"Error in connecting to ZIPGW- Multilevel, try connecting again in Web")
+			else:
+				v = r.get('value')
+				t = r.get('type')
+				if(t == "1"):
+					device_type= "temperature sensor"
+				else:
+					device_type="Unknown"
+
+				p = int(r.get('precision'))
+				u = r.get('unit')
+				multilevel_poll_value = "Polling: Multilevel Sensor Type:" + t + "," + "Value:" + v + "," + "Precision:" + str(p) + "," + "Unit:" + u + "\n"
+				#self.debugData.insert(INSERT, multilevel_poll_value)
+
+				loc = Znodeid[node]	# the Z-Wave node ID
+				last_multilevel_sensor_event = multilevel_sensor_event[node-1][0]
+				new_multilevel_sensor_event = round((float(v)),2)
+				multilevel_sensor_event[node-1][0] = new_multilevel_sensor_event	#update the sensor event
+
+				if last_multilevel_sensor_event != new_multilevel_sensor_event:
+					topic = TOPIC_OF_PUBLISH + '/' + 'event' + '/'
+					data = {"device":device_type  , "value":new_multilevel_sensor_event}
+					message = mqttc.json_encode(data)   # encode oject to JSON
+					send(topic)
+
+
+			#if self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['previouslyFoundDevice'] == 0:
+			#	self.debugData.insert(INSERT,"Polling: Multilevel Sensor found in network\n")
+			#	self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['previouslyFoundDevice'] = 1
+			#	self.debugData.insert(INSERT,multilevel_poll_value)
+			#	self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['defaultState'] = v
+			#if self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['defaultState'] != v:
+			#	self.debugData.insert(INSERT,"Polling: Multilevel Sensor Updated\n")
+			#	self.debugData.insert(INSERT,multilevel_poll_value)
+			#	self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['defaultState'] = v
 		elif self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['previouslyFoundDevice'] == 1:
 				self.debugData.insert(INSERT,"Polling: Multilevel Sensor removed from network\n")
 				self.deviceDictionaryList[self.MULTILEVELSENSORINTERFACE]['previouslyFoundDevice'] = 0
@@ -671,7 +754,8 @@ class zwareClientClass:
 	def mqtt_setupconnect(self):
 		#mqttc = AWSIoTMQTTClient("Sensor")
 		#Use the endpoint from the settings page in the IoT console
-		mqttc.configureEndpoint("data.iot.ap-southeast-1.amazonaws.com",8883)
+		#mqttc.configureEndpoint("data.iot.ap-southeast-1.amazonaws.com",8883)
+		mqttc.configureEndpoint("a1b0zdpxwpwpyy-ats.iot.ap-southeast-1.amazonaws.com",8883)
 		mqttc.configureCredentials("./rootCA.pem","./sensor.private.key","./sensor.cert.pem")
 		mqttc.connect()
 		print ("mqtt Connected")
@@ -807,42 +891,6 @@ class zwareClientClass:
 		#aikhong
 		self.debugData.delete('1.0', END)
 		self.runPollingThread = False
-
-##
-#\mainpage ZWare Sample Client User Guide
-#
-#\section intro Introduction
-#The ZWare Sample Client is an easy-to-use application which demonstrates a selection of the Z-Ware Web API to the user. The Client assists a Z-Wave supported device to communicate with a Z-Ware web server.
-#\subsection prerequisites Prerequisites
-#This guide describes how to setup and run the client on a PC.<br>
-#\ref setup "Dependencies and Setup"
-#\section function Functionality
-#The ZWare Sample Client currently supports the following functionality:<br>1.Connect to either a ZWare local or portal server<br>2.Include a device securely/unsecurely to the network<br>3.Exclude a device from the network<br>4.Poll the network to get a list of nodes.<br>5.Poll the network to get the status of a binary switch (if any), binary sensor (if any) and multilevel sensor (if any) that is connected to the network and <br>6.Toggle a binary switch (if any) in the network to change it's current state using the application<br>7.Manage smart start devices in the zware network<br>
-#\section details Details
-#\ref connect "Connect to a network"<br>
-#\ref poll_network "Polling the network"<br>
-#\ref include_exclude "Including/Excluding a device"<br>
-#\ref smartstart "Managing smart start devices in the network"<br>
-#\ref binary_switch "Working with Binary Switches"<br>
-#\ref binary_sensor "Working with Binary Sensors"<br>
-#\ref multilevel_sensor "Working with Multilevel Sensors"<br>
-#\defgroup setup Dependencies and Setup
-#@{
-#\section dependencies Dependencies
-#1.Ensure that the PC has a network connection.<br>2.Python 3 should be installed on the PC. The recommended version is 3.5.2.
-#<br>3.Install the python library <b>requests</b> by going to the command line and running \verbatim python -m pip install requests \endverbatim If the library is not available python will download and install it.
-#\section setup Setup
-#1.Ensure that the ZWare web server and the ZIP Gateway (Z-Wave over Internet Protocol Gateway) are installed on the Raspberry Pi board provided to the user.
-#<br>2.Refer to the respective documentation of the ZWare web server and the ZIP Gateway in order to correctly install and configure them for use with the ZWare Sample Client.
-#<br>3.The ZIP Gateway should be able to connect to the ZWare server.<br>4.Ensure that a Z-Wave supported device is available for using with the client.
-#@}
-#\defgroup connect Connect to a network
-#\defgroup poll_network Polling the network
-#\defgroup include_exclude Include and Exclude a device
-#\defgroup smartstart Managing smart start devices in the network
-#\defgroup binary_switch Working with Binary Switch
-#\defgroup binary_sensor Working with Binary Sensor
-#\defgroup multilevel_sensor Working with Multilevel Sensor
 
 #Application Entry point
 
