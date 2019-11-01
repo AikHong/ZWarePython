@@ -23,3 +23,20 @@ utime="1566268241"
 vtype="0" - for V1 so ignore
 zensor_nodeid="0" 
 ztype="7" - Notification Type
+
+
+JSON format for the MQTT message to control the devices
+Binary Switch :
+{
+  "nodeid":"7",
+  "command" : "switch",
+  "value": "0"
+}
+
+Thermostat Control :
+{
+  "nodeid":"6",
+  "command" : "thermostat setpoint setting",
+  "value": "22",
+  "type" : "cooling"
+}
